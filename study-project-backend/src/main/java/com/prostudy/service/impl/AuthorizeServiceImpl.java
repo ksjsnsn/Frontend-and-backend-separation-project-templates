@@ -12,6 +12,7 @@ import org.springframework.mail.SimpleMailMessage;
 import org.springframework.security.core.userdetails.User;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.stereotype.Service;
 
 import java.util.Optional;
@@ -33,6 +34,8 @@ public class AuthorizeServiceImpl implements AuthorizeService {
 
     @Value("${spring.mail.username}")
     String from;
+
+    BCryptPasswordEncoder encoder = new BCryptPasswordEncoder();
 
     /**
      * 从数据库里面取东西
@@ -66,13 +69,18 @@ public class AuthorizeServiceImpl implements AuthorizeService {
      * 5.用户在注册时，再从Redis里面取出对应键值对，然后看验证码是否一致
      */
     @Override
-    public boolean sendValidateEmail(String email, String sessionId) {
+    public String sendValidateEmail(String email, String sessionId) {
         String key = "email" + sessionId + ":" + email;
         if (Boolean.TRUE.equals(template.hasKey(key))) {
             Long expire = Optional.ofNullable(template.getExpire(key, TimeUnit.SECONDS)).orElse(0L);
-            if (expire > 120) return false;
+            if (expire > 120) return "请求频繁，请稍后再试";
 
         }
+        //如果用户邮箱已经注册
+        if (mapper.findAccountByNameOrEmail(email) != null) {
+            return "此邮箱已注册";
+        }
+
         Random random = new Random();
         int code = random.nextInt(899999) + 100000;
         SimpleMailMessage message = new SimpleMailMessage();
@@ -85,10 +93,41 @@ public class AuthorizeServiceImpl implements AuthorizeService {
             mailSender.send(message);
 
             template.opsForValue().set(key, String.valueOf(code), 3, TimeUnit.MINUTES);
-            return true;
+            return null;
         } catch (MailException e) {
             e.printStackTrace();
-            return false;
+            return "邮件发送失败，请检查邮件地址是否有效";
+        }
+    }
+
+    /**
+     * 验证并注册
+     *
+     * @param username
+     * @param password
+     * @param email
+     * @param code
+     * @return
+     */
+    @Override
+    public String validateAndRegister(String username, String password, String email, String code, String sessionId) {
+        String key = "email" + sessionId + ":" + email;
+        //先判断redis数据库有没有key
+        if (Boolean.TRUE.equals(template.hasKey(key))) {
+            String s = template.opsForValue().get(key);
+            if (s == null) return "验证码失效，请重新请求";
+            if (s.equals(code)) {
+                password = encoder.encode(password);
+                if (mapper.creatAccount(email, username, password) > 0) {
+                    return null;
+                } else {
+                    return "内部错误，请联系管理员";
+                }
+            } else {
+                return "验证码错误，请检查后提交";
+            }
+        } else {
+            return "请先获取验证码";
         }
     }
 }
